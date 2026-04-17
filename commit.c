@@ -109,11 +109,21 @@ int commit_walk(commit_walk_fn callback, void *ctx) {
     while (1) {
         ObjectType type;
         void *raw;
+        char *raw_text;
         size_t raw_len;
         if (object_read(&id, &type, &raw, &raw_len) != 0) return -1;
 
+        raw_text = malloc(raw_len + 1);
+        if (!raw_text) {
+            free(raw);
+            return -1;
+        }
+        memcpy(raw_text, raw, raw_len);
+        raw_text[raw_len] = '\0';
+
         Commit c;
-        int rc = commit_parse(raw, raw_len, &c);
+        int rc = commit_parse(raw_text, raw_len, &c);
+        free(raw_text);
         free(raw);
         if (rc != 0) return -1;
 
@@ -163,6 +173,7 @@ int head_update(const ObjectID *new_commit) {
     }
 
     char tmp_path[528];
+    int dir_fd;
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", target_path);
     
     f = fopen(tmp_path, "w");
@@ -170,13 +181,43 @@ int head_update(const ObjectID *new_commit) {
     
     char hex[HASH_HEX_SIZE + 1];
     hash_to_hex(new_commit, hex);
-    fprintf(f, "%s\n", hex);
+    if (fprintf(f, "%s\n", hex) < 0) {
+        fclose(f);
+        unlink(tmp_path);
+        return -1;
+    }
     
-    fflush(f);
-    fsync(fileno(f));
-    fclose(f);
+    if (fflush(f) != 0) {
+        fclose(f);
+        unlink(tmp_path);
+        return -1;
+    }
+    if (fsync(fileno(f)) != 0) {
+        fclose(f);
+        unlink(tmp_path);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
     
-    return rename(tmp_path, target_path);
+    if (rename(tmp_path, target_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+
+    // Persist reference rename metadata in .pes directory.
+    dir_fd = open(PES_DIR, O_RDONLY);
+    if (dir_fd >= 0) {
+        if (fsync(dir_fd) != 0) {
+            close(dir_fd);
+            return -1;
+        }
+        close(dir_fd);
+    }
+
+    return 0;
 }
 
 // ─── TODO: Implement these ───────────────────────────────────────────────────
