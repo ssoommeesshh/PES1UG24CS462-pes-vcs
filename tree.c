@@ -122,11 +122,11 @@ static int next_component(const char *path, const char *prefix, char *name_out, 
     return 0;
 }
 
-static int tree_has_entry(const Tree *tree, const char *name) {
+static TreeEntry *tree_find_entry(Tree *tree, const char *name) {
     for (int i = 0; i < tree->count; i++) {
-        if (strcmp(tree->entries[i].name, name) == 0) return 1;
+        if (strcmp(tree->entries[i].name, name) == 0) return &tree->entries[i];
     }
-    return 0;
+    return NULL;
 }
 
 static int load_index_snapshot(Index *index) {
@@ -174,12 +174,18 @@ static int write_tree_level(const Index *index, const char *prefix, ObjectID *id
     for (int i = 0; i < index->count; i++) {
         char name[256];
         int is_dir;
+        TreeEntry *existing;
 
         if (next_component(index->entries[i].path, prefix, name, sizeof(name), &is_dir) != 0) {
             continue;
         }
 
-        if (tree_has_entry(&tree, name)) {
+        existing = tree_find_entry(&tree, name);
+        if (existing) {
+            // Reject ambiguous paths like both "a" and "a/..." in the same tree level.
+            if ((is_dir && existing->mode != MODE_DIR) || (!is_dir && existing->mode == MODE_DIR)) {
+                return -1;
+            }
             continue;
         }
 
