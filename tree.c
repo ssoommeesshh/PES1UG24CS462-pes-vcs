@@ -84,6 +84,41 @@ static int compare_tree_entries(const void *a, const void *b) {
     return strcmp(((const TreeEntry *)a)->name, ((const TreeEntry *)b)->name);
 }
 
+// Check whether a path is inside the provided prefix scope.
+static int path_in_scope(const char *path, const char *prefix) {
+    size_t prefix_len = strlen(prefix);
+    if (prefix_len == 0) return path[0] != '\0';
+    return strncmp(path, prefix, prefix_len) == 0;
+}
+
+// Extract the next path component after prefix.
+// For path="src/lib/main.c" and prefix="src/", this yields name_out="lib", is_dir_out=1.
+static int next_component(const char *path, const char *prefix, char *name_out, size_t name_size, int *is_dir_out) {
+    const char *rest;
+    const char *slash;
+    size_t name_len;
+
+    if (!path || !prefix || !name_out || !is_dir_out || name_size == 0) return -1;
+    if (!path_in_scope(path, prefix)) return -1;
+
+    rest = path + strlen(prefix);
+    if (*rest == '\0') return -1;
+
+    slash = strchr(rest, '/');
+    if (slash) {
+        name_len = (size_t)(slash - rest);
+        *is_dir_out = 1;
+    } else {
+        name_len = strlen(rest);
+        *is_dir_out = 0;
+    }
+
+    if (name_len == 0 || name_len >= name_size) return -1;
+    memcpy(name_out, rest, name_len);
+    name_out[name_len] = '\0';
+    return 0;
+}
+
 // Serialize a Tree struct into binary format for storage.
 // Caller must free(*data_out).
 // Returns 0 on success, -1 on error.
@@ -132,6 +167,8 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 // Returns 0 on success, -1 on error.
 int tree_from_index(ObjectID *id_out) {
     Index index;
+    char name[256];
+    int is_dir;
 
     if (!id_out) return -1;
 
@@ -140,6 +177,13 @@ int tree_from_index(ObjectID *id_out) {
 
     // Recursive hierarchy construction is added in later commits.
     if (index.count == 0) return -1;
+
+    // Commit 2 groundwork: validate that staged paths can be decomposed into tree components.
+    for (int i = 0; i < index.count; i++) {
+        if (next_component(index.entries[i].path, "", name, sizeof(name), &is_dir) != 0) {
+            return -1;
+        }
+    }
 
     (void)index;
     return -1;
