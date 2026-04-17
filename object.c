@@ -62,6 +62,11 @@ int object_exists(const ObjectID *id) {
 
 // ─── TODO: Implement these ──────────────────────────────────────────────────
 
+// Phase 1 implementation notes:
+// - Always hash the full object bytes: "<type> <size>\0<data>"
+// - Use temp-file + fsync + rename for atomic durable writes
+// - Verify hash during reads before returning parsed payload
+
 // Write an object to the store.
 //
 // Object format on disk:
