@@ -212,6 +212,7 @@ int index_load(Index *index) {
 int index_save(const Index *index) {
     Index *sorted;
     FILE *f;
+    int dir_fd;
     char hex[HASH_HEX_SIZE + 1];
     char tmp_path[sizeof(INDEX_FILE) + 8];
 
@@ -268,6 +269,17 @@ int index_save(const Index *index) {
         unlink(tmp_path);
         free(sorted);
         return -1;
+    }
+
+    // Persist the rename in the parent directory metadata.
+    dir_fd = open(PES_DIR, O_RDONLY);
+    if (dir_fd >= 0) {
+        if (fsync(dir_fd) != 0) {
+            close(dir_fd);
+            free(sorted);
+            return -1;
+        }
+        close(dir_fd);
     }
 
     free(sorted);
