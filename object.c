@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -101,6 +102,8 @@ int object_exists(const ObjectID *id) {
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
     const char *type_str = NULL;
     char header[64];
+    char hex[HASH_HEX_SIZE + 1];
+    char shard_dir[512];
     int header_len;
     size_t object_len;
     uint8_t *object_buf;
@@ -135,6 +138,22 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 
     // Hash is computed over the complete object representation.
     compute_hash(object_buf, object_len, id_out);
+
+    if (object_exists(id_out)) {
+        free(object_buf);
+        return 0;
+    }
+
+    hash_to_hex(id_out, hex);
+    if (snprintf(shard_dir, sizeof(shard_dir), "%s/%.2s", OBJECTS_DIR, hex) >= (int)sizeof(shard_dir)) {
+        free(object_buf);
+        return -1;
+    }
+
+    if (mkdir(shard_dir, 0755) != 0 && errno != EEXIST) {
+        free(object_buf);
+        return -1;
+    }
 
     free(object_buf);
     return -1;
