@@ -104,11 +104,17 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     char header[64];
     char hex[HASH_HEX_SIZE + 1];
     char shard_dir[512];
+    char final_path[512];
+    char temp_path[640];
+    int tmp_fd = -1;
+    int dir_fd = -1;
     int header_len;
+    ssize_t written;
+    size_t offset;
     size_t object_len;
     uint8_t *object_buf;
 
-    if (!data || !id_out) return -1;
+    if (!id_out || (!data && len > 0)) return -1;
 
     switch (type) {
         case OBJ_BLOB:
@@ -155,8 +161,57 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
         return -1;
     }
 
+    object_path(id_out, final_path, sizeof(final_path));
+    if (snprintf(temp_path, sizeof(temp_path), "%s/tmp-%d-%ld", shard_dir, (int)getpid(), (long)random()) >= (int)sizeof(temp_path)) {
+        free(object_buf);
+        return -1;
+    }
+
+    tmp_fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (tmp_fd < 0) {
+        free(object_buf);
+        return -1;
+    }
+
+    offset = 0;
+    while (offset < object_len) {
+        written = write(tmp_fd, object_buf + offset, object_len - offset);
+        if (written <= 0) {
+            close(tmp_fd);
+            unlink(temp_path);
+            free(object_buf);
+            return -1;
+        }
+        offset += (size_t)written;
+    }
+
+    if (fsync(tmp_fd) != 0) {
+        close(tmp_fd);
+        unlink(temp_path);
+        free(object_buf);
+        return -1;
+    }
+
+    if (close(tmp_fd) != 0) {
+        unlink(temp_path);
+        free(object_buf);
+        return -1;
+    }
+
+    if (rename(temp_path, final_path) != 0) {
+        unlink(temp_path);
+        free(object_buf);
+        return -1;
+    }
+
+    dir_fd = open(shard_dir, O_RDONLY);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
+
     free(object_buf);
-    return -1;
+    return 0;
 }
 
 // Read an object from the store.
