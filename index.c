@@ -26,6 +26,7 @@
 
 // Forward declaration (implemented in object.c)
 void hash_to_hex(const ObjectID *id, char *hex_out);
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
 
 static int compare_index_entries(const void *a, const void *b) {
     const IndexEntry *ea = (const IndexEntry *)a;
@@ -200,7 +201,7 @@ int index_load(Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_save(const Index *index) {
-    Index sorted;
+    Index *sorted;
     FILE *f;
     char hex[HASH_HEX_SIZE + 1];
     char tmp_path[sizeof(INDEX_FILE) + 8];
@@ -208,15 +209,17 @@ int index_save(const Index *index) {
     if (!index) return -1;
     if (index->count < 0 || index->count > MAX_INDEX_ENTRIES) return -1;
 
-    sorted = *index;
-    qsort(sorted.entries, sorted.count, sizeof(IndexEntry), compare_index_entries);
+    sorted = malloc(sizeof(Index));
+    if (!sorted) return -1;
+    *sorted = *index;
+    qsort(sorted->entries, sorted->count, sizeof(IndexEntry), compare_index_entries);
 
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", INDEX_FILE);
     f = fopen(tmp_path, "w");
     if (!f) return -1;
 
-    for (int i = 0; i < sorted.count; i++) {
-        const IndexEntry *e = &sorted.entries[i];
+    for (int i = 0; i < sorted->count; i++) {
+        const IndexEntry *e = &sorted->entries[i];
         hash_to_hex(&e->hash, hex);
         if (fprintf(f, "%o %s %llu %u %s\n",
                     e->mode,
@@ -226,6 +229,7 @@ int index_save(const Index *index) {
                     e->path) < 0) {
             fclose(f);
             unlink(tmp_path);
+            free(sorted);
             return -1;
         }
     }
@@ -233,23 +237,28 @@ int index_save(const Index *index) {
     if (fflush(f) != 0) {
         fclose(f);
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
     if (fsync(fileno(f)) != 0) {
         fclose(f);
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
     if (fclose(f) != 0) {
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
 
     if (rename(tmp_path, INDEX_FILE) != 0) {
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
 
+    free(sorted);
     return 0;
 }
 
@@ -263,8 +272,55 @@ int index_save(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_add(Index *index, const char *path) {
-    // TODO: Implement file staging
-    // (See Lab Appendix for logical steps)
-    (void)index; (void)path;
-    return -1;
+    struct stat st;
+    FILE *f;
+    void *data = NULL;
+    size_t read_len;
+    ObjectID blob_id;
+    IndexEntry *entry;
+
+    if (!index || !path) return -1;
+    if (index->count >= MAX_INDEX_ENTRIES && !index_find(index, path)) return -1;
+
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return -1;
+    }
+
+    f = fopen(path, "rb");
+    if (!f) return -1;
+
+    if (st.st_size > 0) {
+        data = malloc((size_t)st.st_size);
+        if (!data) {
+            fclose(f);
+            return -1;
+        }
+        read_len = fread(data, 1, (size_t)st.st_size, f);
+        if (read_len != (size_t)st.st_size) {
+            free(data);
+            fclose(f);
+            return -1;
+        }
+    }
+    fclose(f);
+
+    if (object_write(OBJ_BLOB, data, (size_t)st.st_size, &blob_id) != 0) {
+        free(data);
+        return -1;
+    }
+    free(data);
+
+    entry = index_find(index, path);
+    if (!entry) {
+        entry = &index->entries[index->count++];
+        memset(entry, 0, sizeof(*entry));
+    }
+
+    entry->hash = blob_id;
+    entry->mtime_sec = (uint64_t)st.st_mtime;
+    entry->size = (uint32_t)st.st_size;
+    entry->mode = (st.st_mode & S_IXUSR) ? 0100755 : 0100644;
+    snprintf(entry->path, sizeof(entry->path), "%s", path);
+
+    return index_save(index);
 }
