@@ -195,11 +195,24 @@ int head_update(const ObjectID *new_commit) {
 // Returns 0 on success, -1 on error.
 int commit_create(const char *message, ObjectID *commit_id_out) {
     Commit commit;
+    Index *index;
     void *raw = NULL;
     size_t raw_len = 0;
 
     if (!message || !commit_id_out) return -1;
     if (message[0] == '\0') return -1;
+
+    index = malloc(sizeof(Index));
+    if (!index) return -1;
+    if (index_load(index) != 0) {
+        free(index);
+        return -1;
+    }
+    if (index->count == 0) {
+        free(index);
+        return -1;
+    }
+    free(index);
 
     memset(&commit, 0, sizeof(commit));
 
