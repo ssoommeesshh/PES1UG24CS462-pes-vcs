@@ -17,6 +17,9 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+// Forward declaration (implemented in object.c)
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
+
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
 #define MODE_FILE      0100644
@@ -119,6 +122,100 @@ static int next_component(const char *path, const char *prefix, char *name_out, 
     return 0;
 }
 
+static int tree_has_entry(const Tree *tree, const char *name) {
+    for (int i = 0; i < tree->count; i++) {
+        if (strcmp(tree->entries[i].name, name) == 0) return 1;
+    }
+    return 0;
+}
+
+static int load_index_snapshot(Index *index) {
+    FILE *f;
+
+    index->count = 0;
+    f = fopen(INDEX_FILE, "r");
+    if (!f) return 0;
+
+    while (index->count < MAX_INDEX_ENTRIES) {
+        IndexEntry *e = &index->entries[index->count];
+        char hash_hex[HASH_HEX_SIZE + 1];
+        int rc = fscanf(f, "%o %64s %llu %u %511[^\n]\n",
+                        &e->mode,
+                        hash_hex,
+                        (unsigned long long *)&e->mtime_sec,
+                        &e->size,
+                        e->path);
+        if (rc == EOF) break;
+        if (rc != 5 || hex_to_hash(hash_hex, &e->hash) != 0) {
+            fclose(f);
+            return -1;
+        }
+        index->count++;
+    }
+
+    fclose(f);
+    return 0;
+}
+
+static int write_tree_level(const Index *index, const char *prefix, ObjectID *id_out) {
+    Tree tree;
+    void *serialized = NULL;
+    size_t serialized_len = 0;
+
+    tree.count = 0;
+
+    for (int i = 0; i < index->count; i++) {
+        char name[256];
+        int is_dir;
+
+        if (next_component(index->entries[i].path, prefix, name, sizeof(name), &is_dir) != 0) {
+            continue;
+        }
+
+        if (tree_has_entry(&tree, name)) {
+            continue;
+        }
+
+        if (tree.count >= MAX_TREE_ENTRIES) {
+            return -1;
+        }
+
+        TreeEntry *entry = &tree.entries[tree.count];
+        memset(entry, 0, sizeof(*entry));
+        snprintf(entry->name, sizeof(entry->name), "%s", name);
+
+        if (is_dir) {
+            char child_prefix[768];
+            if (snprintf(child_prefix, sizeof(child_prefix), "%s%s/", prefix, name) >= (int)sizeof(child_prefix)) {
+                return -1;
+            }
+            if (write_tree_level(index, child_prefix, &entry->hash) != 0) {
+                return -1;
+            }
+            entry->mode = MODE_DIR;
+        } else {
+            entry->hash = index->entries[i].hash;
+            entry->mode = index->entries[i].mode ? index->entries[i].mode : MODE_FILE;
+        }
+
+        tree.count++;
+    }
+
+    if (tree.count == 0) return -1;
+
+    if (tree_serialize(&tree, &serialized, &serialized_len) != 0) {
+        return -1;
+    }
+
+    if (object_write(OBJ_TREE, serialized, serialized_len, id_out) != 0) {
+        free(serialized);
+        return -1;
+    }
+
+    free(serialized);
+    return 0;
+}
+
 // Serialize a Tree struct into binary format for storage.
 // Caller must free(*data_out).
 // Returns 0 on success, -1 on error.
@@ -167,24 +264,12 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 // Returns 0 on success, -1 on error.
 int tree_from_index(ObjectID *id_out) {
     Index index;
-    char name[256];
-    int is_dir;
 
     if (!id_out) return -1;
 
-    // Commit 1 scaffold: load staged snapshot that will be converted to trees.
-    if (index_load(&index) != 0) return -1;
+    if (load_index_snapshot(&index) != 0) return -1;
 
-    // Recursive hierarchy construction is added in later commits.
     if (index.count == 0) return -1;
 
-    // Commit 2 groundwork: validate that staged paths can be decomposed into tree components.
-    for (int i = 0; i < index.count; i++) {
-        if (next_component(index.entries[i].path, "", name, sizeof(name), &is_dir) != 0) {
-            return -1;
-        }
-    }
-
-    (void)index;
-    return -1;
+    return write_tree_level(&index, "", id_out);
 }
