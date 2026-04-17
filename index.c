@@ -164,6 +164,10 @@ int index_load(Index *index) {
         unsigned long long mtime_tmp;
         int rc;
 
+        if (line[0] == '\n' || line[0] == '\r' || line[0] == '\0') {
+            continue;
+        }
+
         if (index->count >= MAX_INDEX_ENTRIES) {
             fclose(f);
             return -1;
@@ -177,6 +181,11 @@ int index_load(Index *index) {
                     &e->size,
                     e->path);
         if (rc != 5 || hex_to_hash(hash_hex, &e->hash) != 0) {
+            fclose(f);
+            return -1;
+        }
+
+        if (strlen(e->path) == 0 || strlen(e->path) >= sizeof(e->path)) {
             fclose(f);
             return -1;
         }
@@ -216,7 +225,10 @@ int index_save(const Index *index) {
 
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", INDEX_FILE);
     f = fopen(tmp_path, "w");
-    if (!f) return -1;
+    if (!f) {
+        free(sorted);
+        return -1;
+    }
 
     for (int i = 0; i < sorted->count; i++) {
         const IndexEntry *e = &sorted->entries[i];
@@ -281,8 +293,12 @@ int index_add(Index *index, const char *path) {
 
     if (!index || !path) return -1;
     if (index->count >= MAX_INDEX_ENTRIES && !index_find(index, path)) return -1;
+    if (strlen(path) == 0 || strlen(path) >= sizeof(index->entries[0].path)) return -1;
 
     if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return -1;
+    }
+    if (st.st_size < 0 || (uint64_t)st.st_size > UINT32_MAX) {
         return -1;
     }
 
