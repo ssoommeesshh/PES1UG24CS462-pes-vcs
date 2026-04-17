@@ -131,30 +131,37 @@ static int tree_has_entry(const Tree *tree, const char *name) {
 
 static int load_index_snapshot(Index *index) {
     FILE *f;
+    char line[1200];
 
     index->count = 0;
     f = fopen(INDEX_FILE, "r");
     if (!f) return 0;
 
-    while (index->count < MAX_INDEX_ENTRIES) {
+    while (index->count < MAX_INDEX_ENTRIES && fgets(line, sizeof(line), f) != NULL) {
         IndexEntry *e = &index->entries[index->count];
         char hash_hex[HASH_HEX_SIZE + 1];
-        int rc = fscanf(f, "%o %64s %llu %u %511[^\n]\n",
+        unsigned long long mtime_tmp;
+        int rc = sscanf(line, "%o %64s %llu %u %511[^\n]",
                         &e->mode,
                         hash_hex,
-                        (unsigned long long *)&e->mtime_sec,
+                        &mtime_tmp,
                         &e->size,
                         e->path);
-        if (rc == EOF) break;
         if (rc != 5 || hex_to_hash(hash_hex, &e->hash) != 0) {
             fclose(f);
             return -1;
         }
+        e->mtime_sec = (uint64_t)mtime_tmp;
         index->count++;
     }
 
     fclose(f);
     return 0;
+}
+
+static uint32_t normalize_file_mode(uint32_t mode) {
+    if (mode == MODE_EXEC) return MODE_EXEC;
+    return MODE_FILE;
 }
 
 static int write_tree_level(const Index *index, const char *prefix, ObjectID *id_out) {
@@ -195,7 +202,7 @@ static int write_tree_level(const Index *index, const char *prefix, ObjectID *id
             entry->mode = MODE_DIR;
         } else {
             entry->hash = index->entries[i].hash;
-            entry->mode = index->entries[i].mode ? index->entries[i].mode : MODE_FILE;
+            entry->mode = normalize_file_mode(index->entries[i].mode);
         }
 
         tree.count++;
